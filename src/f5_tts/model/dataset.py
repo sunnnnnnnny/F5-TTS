@@ -128,6 +128,11 @@ class CustomDataset(Dataset):
     def __getitem__(self, index):
         while True:
             row = self.data[index]
+            """
+            {'audio_path': '/sharedir/nlp/workspace/yuqiangz_living_data/data_other_language/malaysian_silerovad_split/wav/CJS-0725-TTS-Malaysian-LiveDeliveryStyle._00003.wav', 
+            'text': ['o', 'k', 'a', 'y', ' ', 'a', 's', 's', 'a', 'l', 'a', 'm', 'u', 'a', 'l', 'a', 'i', 'k', 'u', 'm', ' ', 'd', 'a', 'n', ' ', 's', 'a', 'l', 'a', 'm'], 
+            'duration': 1.76}
+            """
             audio_path = row["audio_path"]
             text = row["text"]
             duration = row["duration"]
@@ -138,7 +143,7 @@ class CustomDataset(Dataset):
 
             index = (index + 1) % len(self.data)
 
-        if self.preprocessed_mel:
+        if self.preprocessed_mel: # False
             mel_spec = torch.tensor(row["mel_spec"])
         else:
             audio, source_sample_rate = torchaudio.load(audio_path)
@@ -153,8 +158,8 @@ class CustomDataset(Dataset):
                 audio = resampler(audio)
 
             # to mel spectrogram
-            mel_spec = self.mel_spectrogram(audio)
-            mel_spec = mel_spec.squeeze(0)  # '1 d t -> d t'
+            mel_spec = self.mel_spectrogram(audio)  # mel_spec [100, 166]
+            mel_spec = mel_spec.squeeze(0)  # '1 d t -> d t' 
 
         return {
             "mel_spec": mel_spec,
@@ -254,9 +259,10 @@ def load_dataset(
     """
 
     print("Loading dataset ...")
-
+    audio_info_dir = "/sharedir/nlp/workspace/yuqiangz_living_data/data_other_language"
     if dataset_type == "CustomDataset":
-        rel_data_path = str(files("f5_tts").joinpath(f"../../data/{dataset_name}_{tokenizer}"))
+        # rel_data_path = str(files("f5_tts").joinpath(f"../../data/{dataset_name}_{tokenizer}"))
+        rel_data_path = f"{audio_info_dir}/{dataset_name}"
         if audio_type == "raw":
             try:
                 train_dataset = load_from_disk(f"{rel_data_path}/raw")
@@ -276,6 +282,8 @@ def load_dataset(
             mel_spec_module=mel_spec_module,
             **mel_spec_kwargs,
         )
+        train_dataset.__getitem__(0)
+        print()
 
     elif dataset_type == "CustomDatasetPath":
         try:

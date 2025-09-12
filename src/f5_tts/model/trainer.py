@@ -7,6 +7,7 @@ import os
 import torch
 import torchaudio
 import wandb
+import numpy as np
 from accelerate import Accelerator
 from accelerate.utils import DistributedDataParallelKwargs
 from ema_pytorch import EMA
@@ -208,7 +209,7 @@ class Trainer:
             else:
                 # If no training checkpoints, use pretrained model
                 latest_checkpoint = next(f for f in all_checkpoints if f.startswith("pretrained_"))
-
+        print("latest_checkpoint is : ", latest_checkpoint)
         if latest_checkpoint.endswith(".safetensors"):  # always a pretrained checkpoint
             from safetensors.torch import load_file
 
@@ -260,7 +261,9 @@ class Trainer:
         return update
 
     def train(self, train_dataset: Dataset, num_workers=16, resumable_with_seed: int = None):
-        if self.log_samples:
+        import ipdb
+        ipdb.set_trace()
+        if self.log_samples: # False
             from f5_tts.infer.utils_infer import cfg_strength, load_vocoder, nfe_step, sway_sampling_coef
 
             vocoder = load_vocoder(
@@ -270,7 +273,7 @@ class Trainer:
             log_samples_path = f"{self.checkpoint_path}/samples"
             os.makedirs(log_samples_path, exist_ok=True)
 
-        if exists(resumable_with_seed):
+        if exists(resumable_with_seed):  # resumable_with_seed = 666
             generator = torch.Generator()
             generator.manual_seed(resumable_with_seed)
         else:
@@ -287,13 +290,13 @@ class Trainer:
                 shuffle=True,
                 generator=generator,
             )
-        elif self.batch_size_type == "frame":
+        elif self.batch_size_type == "frame":  # yes
             self.accelerator.even_batches = False
-            sampler = SequentialSampler(train_dataset)
+            sampler = SequentialSampler(train_dataset)  # 按顺序依次抽取样本
             batch_sampler = DynamicBatchSampler(
                 sampler,
-                self.batch_size_per_gpu,
-                max_samples=self.max_samples,
+                frames_threshold=self.batch_size_per_gpu,  # 3200
+                max_samples=self.max_samples, # 64
                 random_seed=resumable_with_seed,  # This enables reproducible shuffling
                 drop_residual=False,
             )
@@ -325,6 +328,7 @@ class Trainer:
             train_dataloader, self.scheduler
         )  # actual multi_gpu updates = single_gpu updates / gpu nums
         start_update = self.load_checkpoint()
+        start_update = 0
         global_update = start_update
 
         if exists(resumable_with_seed):
@@ -356,21 +360,22 @@ class Trainer:
                 disable=not self.accelerator.is_local_main_process,
                 initial=progress_bar_initial,
             )
-
-            for batch in current_dataloader:
-                with self.accelerator.accumulate(self.model):
+            loss_list = []
+            for batch in current_dataloader:  # batch["mel"] [6,100,535] batch["mel_lengths"] [6] [532, 532, 532, 535, 535, 535]
+                with self.accelerator.accumulate(self.model): # batch["text"] [[],[],[],[],[],[]]  batch["text_lengths"] [6] [ 76,  44,  53,  96,  65, 122]
                     text_inputs = batch["text"]
-                    mel_spec = batch["mel"].permute(0, 2, 1)
-                    mel_lengths = batch["mel_lengths"]
+                    mel_spec = batch["mel"].permute(0, 2, 1)  # [6,535,100]
+                    mel_lengths = batch["mel_lengths"] 
 
                     # TODO. add duration predictor training
-                    if self.duration_predictor is not None and self.accelerator.is_local_main_process:
+                    if self.duration_predictor is not None and self.accelerator.is_local_main_process:  # False
                         dur_loss = self.duration_predictor(mel_spec, lens=batch.get("durations"))
                         self.accelerator.log({"duration loss": dur_loss.item()}, step=global_update)
 
                     loss, cond, pred = self.model(
-                        mel_spec, text=text_inputs, lens=mel_lengths, noise_scheduler=self.noise_scheduler
+                        mel_spec, text=text_inputs, lens=mel_lengths, noise_scheduler=self.noise_scheduler  # self.noise_scheduler None
                     )
+                    loss_list.append(loss.item())
                     self.accelerator.backward(loss)
 
                     if self.max_grad_norm > 0 and self.accelerator.sync_gradients:
@@ -390,7 +395,7 @@ class Trainer:
 
                 if self.accelerator.is_local_main_process:
                     self.accelerator.log(
-                        {"loss": loss.item(), "lr": self.scheduler.get_last_lr()[0]}, step=global_update
+                        {"loss": loss.item(), "lr": self.scheduler.get_last_lr()[0]},step=global_update
                     )
                     if self.logger == "tensorboard":
                         self.writer.add_scalar("loss", loss.item(), global_update)
@@ -433,6 +438,10 @@ class Trainer:
                             f"{log_samples_path}/update_{global_update}_ref.wav", ref_audio, target_sample_rate
                         )
                         self.model.train()
+            if self.accelerator.is_local_main_process:
+                if self.logger == "tensorboard":
+                    self.writer.add_scalar("loss_epoch", np.array(loss_list).mean(), epoch+1)
+                
 
         self.save_checkpoint(global_update, last=True)
 

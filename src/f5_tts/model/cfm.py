@@ -234,58 +234,58 @@ class CFM(nn.Module):
         *,
         lens: int["b"] | None = None,  # noqa: F821
         noise_scheduler: str | None = None,
-    ):
+    ): # inp [6, 535, 100] text [[],[],[],[],[],[]]  lens [532, 532, 532, 535, 535, 535] noise_scheduler None
         # handle raw wave
-        if inp.ndim == 2:
+        if inp.ndim == 2:  # false
             inp = self.mel_spec(inp)
             inp = inp.permute(0, 2, 1)
             assert inp.shape[-1] == self.num_channels
 
         batch, seq_len, dtype, device, _σ1 = *inp.shape[:2], inp.dtype, self.device, self.sigma
-
+        # batch 6 seq_len 535 dtype torch.float32 device cuda:0 _σ1 0.0
         # handle text as string
         if isinstance(text, list):
-            if exists(self.vocab_char_map):
-                text = list_str_to_idx(text, self.vocab_char_map).to(device)
+            if exists(self.vocab_char_map): # true
+                text = list_str_to_idx(text, self.vocab_char_map).to(device) # text.shape [6, 122]
             else:
                 text = list_str_to_tensor(text).to(device)
             assert text.shape[0] == batch
 
         # lens and mask
-        if not exists(lens):
+        if not exists(lens): # false
             lens = torch.full((batch,), seq_len, device=device)
 
         mask = lens_to_mask(lens, length=seq_len)  # useless here, as collate_fn will pad to max length in batch
-
+        # mask [6, 535] padding False nopadding True
         # get a random span to mask out for training conditionally
-        frac_lengths = torch.zeros((batch,), device=self.device).float().uniform_(*self.frac_lengths_mask)
-        rand_span_mask = mask_from_frac_lengths(lens, frac_lengths)
-
-        if exists(mask):
+        frac_lengths = torch.zeros((batch,), device=self.device).float().uniform_(*self.frac_lengths_mask)  # torch.zeros((batch,), device=self.device).float() [0,0,0,0,0,0]  self.frac_lengths_mask=(0.7, 1.0) -> [0.9994, 0.7395, 0.7729, 0.8940, 0.9979, 0.8856]
+        rand_span_mask = mask_from_frac_lengths(lens, frac_lengths) # [532, 532, 532, 535, 535, 535] [0.9994, 0.7395, 0.7729, 0.8940, 0.9979, 0.8856]
+        # rand_span_mask [6, 535] # [start, end] 为 True，其余为False
+        if exists(mask): # yes
             rand_span_mask &= mask
 
         # mel is x1
-        x1 = inp
+        x1 = inp  # inp [6,535,100]
 
         # x0 is gaussian noise
-        x0 = torch.randn_like(x1)
+        x0 = torch.randn_like(x1)  # x0 [6,535,100]  # noise
 
         # time step
-        time = torch.rand((batch,), dtype=dtype, device=self.device)
+        time = torch.rand((batch,), dtype=dtype, device=self.device)  # [0.1617, 0.8255, 0.6722, 0.4193, 0.8212, 0.3781]
         # TODO. noise_scheduler
 
         # sample xt (φ_t(x) in the paper)
-        t = time.unsqueeze(-1).unsqueeze(-1)
+        t = time.unsqueeze(-1).unsqueeze(-1)  # t [1,1,1]
         φ = (1 - t) * x0 + t * x1
         flow = x1 - x0
 
         # only predict what is within the random mask span for infilling
-        cond = torch.where(rand_span_mask[..., None], torch.zeros_like(x1), x1)
-
+        cond = torch.where(rand_span_mask[..., None], torch.zeros_like(x1), x1)  
+        # rand_span_mask[..., None] [6, 535,1]  torch.zeros_like(x1) [6, 535, 100] 
         # transformer and cfg training with a drop rate
-        drop_audio_cond = random() < self.audio_drop_prob  # p_drop in voicebox paper
-        if random() < self.cond_drop_prob:  # p_uncond in voicebox paper
-            drop_audio_cond = True
+        drop_audio_cond = random() < self.audio_drop_prob  # p_drop in voicebox paper  self.audio_drop_prob = 0.3 drop_audio_cond True
+        if random() < self.cond_drop_prob:  # p_uncond in voicebox paper  self.cond_drop_prob = 0.2, True
+            drop_audio_cond = True  
             drop_text = True
         else:
             drop_text = False
@@ -293,10 +293,10 @@ class CFM(nn.Module):
         # apply mask will use more memory; might adjust batchsize or batchsampler long sequence threshold
         pred = self.transformer(
             x=φ, cond=cond, text=text, time=time, drop_audio_cond=drop_audio_cond, drop_text=drop_text, mask=mask
-        )
+        )  # pred [6, 535,100]
 
         # flow matching loss
-        loss = F.mse_loss(pred, flow, reduction="none")
-        loss = loss[rand_span_mask]
+        loss = F.mse_loss(pred, flow, reduction="none")  # loss [6, 535, 100]  # pred [6, 535,100] flow [6, 535,100]
+        loss = loss[rand_span_mask] # loss [2717, 100]
 
         return loss.mean(), cond, pred

@@ -210,15 +210,15 @@ def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0, theta_resca
     return torch.cat([freqs_cos, freqs_sin], dim=-1)
 
 
-def get_pos_embed_indices(start, length, max_pos, scale=1.0):
+def get_pos_embed_indices(start, length, max_pos, scale=1.0):  # start [0, 0, 0, 0, 0, 0]  length=535 # max_pos=4096
     # length = length if isinstance(length, int) else length.max()
-    scale = scale * torch.ones_like(start, dtype=torch.float32)  # in case scale is a scalar
+    scale = scale * torch.ones_like(start, dtype=torch.float32)  # in case scale is a scalar  scale=[1., 1., 1., 1., 1., 1.]
     pos = (
         start.unsqueeze(1)
         + (torch.arange(length, device=start.device, dtype=torch.float32).unsqueeze(0) * scale.unsqueeze(1)).long()
-    )
+    ) # pos [[  0,   1,   2,  ..., 532, 533, 534], [  0,   1,   2,  ..., 532, 533, 534], ....]
     # avoid extra long error.
-    pos = torch.where(pos < max_pos, pos, max_pos - 1)
+    pos = torch.where(pos < max_pos, pos, max_pos - 1) # # pos [[  0,   1,   2,  ..., 532, 533, 534], [  0,   1,   2,  ..., 532, 533, 534], ....]
     return pos
 
 
@@ -310,11 +310,11 @@ class AdaLayerNorm(nn.Module):
 
         self.norm = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
 
-    def forward(self, x, emb=None):
-        emb = self.linear(self.silu(emb))
+    def forward(self, x, emb=None):  # x [6, 535, 1024] emb [6,1024]
+        emb = self.linear(self.silu(emb)) # self.linear Linear(1024, 1024*6=6144) emb [6,6144]
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = torch.chunk(emb, 6, dim=1)
-
-        x = self.norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]
+        # shift_msa [6, 1024] scale_msa [6, 1024] gate_msa [6, 1024] shift_mlp [6, 1024] scale_mlp [6, 1024] gate_mlp [6, 1024]
+        x = self.norm(x) * (1 + scale_msa[:, None]) + shift_msa[:, None]  # scale_msa[:, None] [6,1,1024]
         return x, gate_msa, shift_mlp, scale_mlp, gate_mlp
 
 
@@ -678,18 +678,20 @@ class DiTBlock(nn.Module):
         self.ff = FeedForward(dim=dim, mult=ff_mult, dropout=dropout, approximate="tanh")
 
     def forward(self, x, t, mask=None, rope=None):  # x: noised input, t: time embedding
-        # pre-norm & modulation for attention input
+        import ipdb
+        ipdb.set_trace()  # for debugging
+        # pre-norm & modulation for attention input x [6, 535, 1024]  t [6, 1024] mask [6, 535] mask padding False nopadding True  len(rope) = 2 len(rope[0])=1  rope[1]=1.0  rope[0][0].shape=[535, 64]
         norm, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.attn_norm(x, emb=t)
-
+        # norm [6, 535, 1024] # gate_msa [6, 1024] shift_mlp [6, 1024] scale_mlp [6, 1024] gate_mlp [6, 1024]
         # attention
-        attn_output = self.attn(x=norm, mask=mask, rope=rope)
+        attn_output = self.attn(x=norm, mask=mask, rope=rope)  # attn_output [6, 535, 1024]
 
         # process attention output for input x
         x = x + gate_msa.unsqueeze(1) * attn_output
 
         norm = self.ff_norm(x) * (1 + scale_mlp[:, None]) + shift_mlp[:, None]
-        ff_output = self.ff(norm)
-        x = x + gate_mlp.unsqueeze(1) * ff_output
+        ff_output = self.ff(norm)  # [1024,2048] [2024, 1024]
+        x = x + gate_mlp.unsqueeze(1) * ff_output  # [6, 535,1024]
 
         return x
 

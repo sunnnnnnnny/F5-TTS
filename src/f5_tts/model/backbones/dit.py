@@ -45,32 +45,32 @@ class TextEmbedding(nn.Module):
         else:
             self.extra_modeling = False
 
-    def forward(self, text: int["b nt"], seq_len, drop_text=False):  # noqa: F722
+    def forward(self, text: int["b nt"], seq_len, drop_text=False):  # noqa: F722  text=[6, 122] seq_len=535  drop_text=False   
         text = text + 1  # use 0 as filler token. preprocess of batch pad -1, see list_str_to_idx()
         text = text[:, :seq_len]  # curtail if character tokens are more than the mel spec tokens
-        batch, text_len = text.shape[0], text.shape[1]
-        text = F.pad(text, (0, seq_len - text_len), value=0)
-        if self.mask_padding:
-            text_mask = text == 0
+        batch, text_len = text.shape[0], text.shape[1]  # batch =6 text_len=122
+        text = F.pad(text, (0, seq_len - text_len), value=0)  # text [6, 535]  # pad to mel spec length
+        if self.mask_padding: # True
+            text_mask = text == 0  # paddinged True nopaddinged False   
 
         if drop_text:  # cfg for text
             text = torch.zeros_like(text)
 
-        text = self.text_embed(text)  # b n -> b n d
+        text = self.text_embed(text)  # b n -> b n d  # Embedding(2546, 512) [6,535, 512]
 
         # possible extra modeling
-        if self.extra_modeling:
+        if self.extra_modeling:  # True
             # sinus pos emb
-            batch_start = torch.zeros((batch,), dtype=torch.long)
-            pos_idx = get_pos_embed_indices(batch_start, seq_len, max_pos=self.precompute_max_pos)
-            text_pos_embed = self.freqs_cis[pos_idx]
-            text = text + text_pos_embed
+            batch_start = torch.zeros((batch,), dtype=torch.long) # [0, 0, 0, 0, 0, 0]
+            pos_idx = get_pos_embed_indices(batch_start, seq_len, max_pos=self.precompute_max_pos) # self.precompute_max_pos=4096  pos_idx [[  0,   1,   2,  ..., 532, 533, 534], [  0,   1,   2,  ..., 532, 533, 534], ....]
+            text_pos_embed = self.freqs_cis[pos_idx]  # self.freqs_cis [4096, 512] -> [6, 535, 512]
+            text = text + text_pos_embed  # [6, 535, 512]
 
             # convnextv2 blocks
-            if self.mask_padding:
-                text = text.masked_fill(text_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)), 0.0)
-                for block in self.text_blocks:
-                    text = block(text)
+            if self.mask_padding:  # True
+                text = text.masked_fill(text_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)), 0.0)  # text_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)) -> [6, 535, 512] # mask padding tokens
+                for block in self.text_blocks:  # ConvNeXtV2Block0 ConvNeXtV2Bloc1 ConvNeXtV2Bloc2 ConvNeXtV2Bloc3
+                    text = block(text) # [6, 535, 1024]
                     text = text.masked_fill(text_mask.unsqueeze(-1).expand(-1, -1, text.size(-1)), 0.0)
             else:
                 text = self.text_blocks(text)
@@ -190,8 +190,8 @@ class DiT(nn.Module):
         drop_audio_cond: bool = False,
         drop_text: bool = False,
         cache: bool = True,
-    ):
-        seq_len = x.shape[1]
+    ): # x [6,535,100] cond [6, 535, 100] text [6,122]
+        seq_len = x.shape[1] # seq_len=535
         if cache:
             if drop_text:
                 if self.text_uncond is None:
@@ -201,7 +201,7 @@ class DiT(nn.Module):
                 if self.text_cond is None:
                     self.text_cond = self.text_embed(text, seq_len, drop_text=False)
                 text_embed = self.text_cond
-        else:
+        else: # yes drop_text=False
             text_embed = self.text_embed(text, seq_len, drop_text=drop_text)
 
         x = self.input_embed(x, cond, text_embed, drop_audio_cond=drop_audio_cond)
@@ -222,38 +222,41 @@ class DiT(nn.Module):
         drop_text: bool = False,  # cfg for text
         cfg_infer: bool = False,  # cfg inference, pack cond & uncond forward
         cache: bool = False,
-    ):
-        batch, seq_len = x.shape[0], x.shape[1]
-        if time.ndim == 0:
+    ): # x [6,535,100] cond [6, 535, 100] text [6,122] time [6] mask [6,535]  drop_audio_cond=True drop_text=True cfg_infer=False cache=False
+        batch, seq_len = x.shape[0], x.shape[1] # batch=6 seq_len=535
+        if time.ndim == 0: # False
             time = time.repeat(batch)
 
         # t: conditioning time, text: text, x: noised audio + cond audio + text
-        t = self.time_embed(time)
+        t = self.time_embed(time)  # SinusPositionEmbedding + Linear(in_features=256, out_features=1024, bias=True) + SiLU() + Linear(in_features=1024, out_features=1024, bias=True) -> [6,1024]
+        import ipdb
+        ipdb.set_trace()
         if cfg_infer:  # pack cond & uncond forward: b n d -> 2b n d
             x_cond = self.get_input_embed(x, cond, text, drop_audio_cond=False, drop_text=False, cache=cache)
             x_uncond = self.get_input_embed(x, cond, text, drop_audio_cond=True, drop_text=True, cache=cache)
             x = torch.cat((x_cond, x_uncond), dim=0)
             t = torch.cat((t, t), dim=0)
             mask = torch.cat((mask, mask), dim=0) if mask is not None else None
-        else:
-            x = self.get_input_embed(x, cond, text, drop_audio_cond=drop_audio_cond, drop_text=drop_text, cache=cache)
+        else:  # yes x [6,535,100] cond [6, 535, 100] text [6,122]
+            x = self.get_input_embed(x, cond, text, drop_audio_cond=drop_audio_cond, drop_text=drop_text, cache=cache)  # x -> [6, 535, 1024]
 
-        rope = self.rotary_embed.forward_from_seq_len(seq_len)
+        rope = self.rotary_embed.forward_from_seq_len(seq_len) # len(rope) = 2 len(rope[0])=1  rope[1]=1.0  rope[0][0].shape=[535, 64]
 
-        if self.long_skip_connection is not None:
+        if self.long_skip_connection is not None:  # self.long_skip_connection is None
             residual = x
-
-        for block in self.transformer_blocks:
+        import ipdb
+        ipdb.set_trace()
+        for block in self.transformer_blocks:  # len(self.transformer_blocks) = 22
             if self.checkpoint_activations:
                 # https://pytorch.org/docs/stable/checkpoint.html#torch.utils.checkpoint.checkpoint
                 x = torch.utils.checkpoint.checkpoint(self.ckpt_wrapper(block), x, t, mask, rope, use_reentrant=False)
             else:
-                x = block(x, t, mask=mask, rope=rope)
+                x = block(x, t, mask=mask, rope=rope) # x [6, 535, 1024]  t [6, 1024] mask [6, 535] mask padding False nopadding True  len(rope) = 2 len(rope[0])=1  rope[1]=1.0  rope[0][0].shape=[535, 64]
 
         if self.long_skip_connection is not None:
             x = self.long_skip_connection(torch.cat((x, residual), dim=-1))
 
-        x = self.norm_out(x, t)
-        output = self.proj_out(x)
+        x = self.norm_out(x, t) # x [6, 535, 1024] t [6, 1024] 
+        output = self.proj_out(x) # self.proj_out = Linear(in_features=1024, out_features=100, bias=True) -> output [6, 535, 100]
 
         return output

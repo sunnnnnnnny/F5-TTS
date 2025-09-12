@@ -56,21 +56,21 @@ def lens_to_mask(t: int["b"], length: int | None = None) -> bool["b n"]:  # noqa
     return seq[None, :] < t[:, None]
 
 
-def mask_from_start_end_indices(seq_len: int["b"], start: int["b"], end: int["b"]):  # noqa: F722 F821
-    max_seq_len = seq_len.max().item()
-    seq = torch.arange(max_seq_len, device=start.device).long()
-    start_mask = seq[None, :] >= start[:, None]
+def mask_from_start_end_indices(seq_len: int["b"], start: int["b"], end: int["b"]):  # noqa: F722 F821  seq_len [532, 532, 532, 535, 535, 535] start [ 0, 42, 38, 13,  0,  2] end [531, 435, 449, 491, 533, 475]
+    max_seq_len = seq_len.max().item()  # max_seq_len 535
+    seq = torch.arange(max_seq_len, device=start.device).long()  # seq [0, 1, 2, ..., 534] [start,end] masked
+    start_mask = seq[None, :] >= start[:, None] # 
     end_mask = seq[None, :] < end[:, None]
-    return start_mask & end_mask
+    return start_mask & end_mask  # [6,535]  [start,end]为True，其余为False
 
 
-def mask_from_frac_lengths(seq_len: int["b"], frac_lengths: float["b"]):  # noqa: F722 F821
-    lengths = (frac_lengths * seq_len).long()
-    max_start = seq_len - lengths
+def mask_from_frac_lengths(seq_len: int["b"], frac_lengths: float["b"]):  # noqa: F722 F821  seq_len [532, 532, 532, 535, 535, 535] frac_lengths [0.9994, 0.7395, 0.7729, 0.8940, 0.9979, 0.8856]
+    lengths = (frac_lengths * seq_len).long() # lengths [531, 393, 411, 478, 533, 473]
+    max_start = seq_len - lengths # max_start [  1, 139, 121,  57,   2,  62]
 
-    rand = torch.rand_like(frac_lengths)
-    start = (max_start * rand).long().clamp(min=0)
-    end = start + lengths
+    rand = torch.rand_like(frac_lengths) # rand [0.9968, 0.3046, 0.3190, 0.2428, 0.0497, 0.0366]
+    start = (max_start * rand).long().clamp(min=0) # start [ 0, 42, 38, 13,  0,  2]
+    end = start + lengths # end [531, 435, 449, 491, 533, 475]
 
     return mask_from_start_end_indices(seq_len, start, end)
 
@@ -117,8 +117,10 @@ def get_tokenizer(dataset_name, tokenizer: str = "pinyin"):
                 - if use "char", derived from unfiltered character & symbol counts of custom dataset
                 - if use "byte", set to 256 (unicode byte range)
     """
+    pretrained_model_dir = "/sharedir/nlp/workspace/guohu/project/tts_project_2025/F5-TTS/ckpts/F5TTS_v1_Base"
     if tokenizer in ["pinyin", "char"]:
-        tokenizer_path = os.path.join(files("f5_tts").joinpath("../../data"), f"{dataset_name}_{tokenizer}/vocab.txt")
+        # tokenizer_path = os.path.join(files("f5_tts").joinpath("../../data"), f"{dataset_name}_{tokenizer}/vocab.txt")
+        tokenizer_path = os.path.join(pretrained_model_dir, "vocab.txt")
         with open(tokenizer_path, "r", encoding="utf-8") as f:
             vocab_char_map = {}
             for i, char in enumerate(f):
